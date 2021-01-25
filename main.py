@@ -8,9 +8,8 @@ from Discord_stuff import *
 
 PORT = 2137
 
-db = DB_handler()
+
 active_connections = []
-user_list = []
 
 def test1(con_list, data):
     print(f"data to {con_list}")
@@ -71,10 +70,11 @@ def make_app():
 if __name__ == "__main__":
     app = make_app()
     app.listen(PORT)
+    db = DB_handler()
     print(f"Listening localhost on {PORT}")
-    discord_http = create_discord_http(BOT, db)
-    discord_ws = create_discord_ws(user_list, db)
-    asyncio.ensure_future(discord_ws.start_loop(), loop=my_loop)
+    discord_http = create_discord_http(db)
+    discord_ws = create_discord_ws(function="VOICE_STATE_OBSERVER", database=db)
+    asyncio.ensure_future(discord_ws.await_messages(), loop=my_loop)
 
 
     tornado.ioloop.IOLoop.current().start()

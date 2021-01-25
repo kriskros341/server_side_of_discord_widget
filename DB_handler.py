@@ -50,4 +50,3 @@ class DB_handler():
         cur.close()
         self.con.commit()
         return result
-        #cur.execute(f"SELECT * FROM users LIMIT 1 OFFSET {offset}")
