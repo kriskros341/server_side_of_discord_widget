@@ -3,10 +3,15 @@ from tornado.websocket import websocket_connect
 import json
 import asyncio
 import datetime
+from cert import *
+
 my_loop = asyncio.get_event_loop()
 
-BOT = "NzcxMDA3MTI1Mjc4OTQ5NDE3.X5l2Vw.78cX5mxVfEVAdKz8mgiFv0hWo8U"  #irek MjE0NjQ4NDQ0NzY4MjIzMjMy.Xg-dAA.7VrWSRCstTcr0Mu2LeZC5ZC6rCw
-DISCORD_HELLO_OBJECT = {"op": 2,"d": {"token": BOT, "intents": 640, "properties": { "$os": "linux", "$browser": "disco", "$device": "disco"}}}
+
+DISCORD_HELLO_OBJECT = {"op": 2, "d": {
+    "token": bot_token, "intents": 640, "properties":
+        {"$os": "linux", "$browser": "disco", "$device": "disco"}
+     }}
 
 
 class UserObject:
@@ -27,89 +32,112 @@ class UserObject:
         return {"id": self.id, "online": self.voice_state, "saved_datetime": self.saved_time, "img_id": self.avatar}
 
 
-class UserList:
-    def __init__(self):
-        self.users = []
-
-    def add_user(self, user_data):
-        self.users.append(user_data)
-
-    def remove_user(self, user_data):
-        self.users.pop(self.users.index(next(user for user in self.users if user['id'] == user_data['id'])))
-
-
-my_users = UserList()
-
-
-def create_discord_http(auth_token, db):
-    return DiscordHttp(auth_token, db)
+def create_discord_http(db):
+    return DiscordHttp(db)
 
 
 class DiscordHttp:
-    def __init__(self, auth_token, db):
+    def __init__(self, db):
+        self.db = db
         db.set_discord_http_interface(self)
         self.bot_headers = {
                             "User-Agent": "DiscordBot($url, $versionNumber)",
-                            "Authorization": f"Bot {auth_token}",
+                            "Authorization": f"Bot {bot_token}",
                             }
 
     def get_user_data(self, user_id):
         requested_data = requests.get(f"https://discord.com/api/v8/users/{user_id}", headers=self.bot_headers)
         return requested_data.json()
 
+    def update_guilds(self):
+        guilds = requests.get("https://discord.com/api/v8/users/@me/guilds", headers=self.bot_headers)
+        recorded_guilds = self.db.get_data_guilds()
+        print(guilds.json())
+        print(recorded_guilds)
+        #u = self.db.find_which_guild_user_is_in
+        for guild_data in guilds.json():
+            if guild_data['id'] not in [g['id'] for g in recorded_guilds]:
+                self.db.create_guild(guild_data)
 
-def create_discord_ws(user_list, db):
-    return DiscordWsHandler(user_list, db)
 
-def on_ping(ws, *data):
-    print("print", *data)
+
+def create_discord_ws(function=None, database=None):
+    discord_ws = DiscordWsHandler()
+    discord_ws.set_functional_interface(function, database)
+    return discord_ws
 
 
 class DiscordWsHandler:
-    def __init__(self, user_list, db):
-        self.db_interface = db
-        self.user_list = my_users
+    def __init__(self):
         self.connection = None
-        self.connections = []
         self.sequence_number = None
-        asyncio.ensure_future(self.get_con_and_start_loop(), loop=my_loop)
+        self.functional_interface = None
+        asyncio.ensure_future(self.get_con(), loop=my_loop)
 
-    async def get_con_and_start_loop(self):
-        print("connecting")
+    def set_functional_interface(self, functional_interface: str, db) -> None:
+        assert functional_interface is not None, \
+            print(f"{functional_interface} is not a valid functional interface")
+        self.functional_interface = interface_factory(functional_interface, db)
+
+    async def get_con(self) -> None:
         ws = await websocket_connect("wss://gateway.discord.gg/?v=6&encoding=json")
         self.connection = ws
-        await ws.write_message(json.dumps(DISCORD_HELLO_OBJECT))
-        asyncio.ensure_future(self.take_care_of_pinging(ws), loop=my_loop)
-        await self.start_loop()
+        asyncio.ensure_future(self.send_handshake_and_start_pinging(ws), loop=my_loop)
+        await self.await_messages()
 
-    async def restart_connection(self):
-        self.connection.close()
+    async def send_handshake_and_start_pinging(self, ws) -> None:
+        """ uzycie self.connection == ws mi sie nie podoba. """
+        ws.write_message(json.dumps(DISCORD_HELLO_OBJECT))
+        while self.connection == ws:
+            self.connection.write_message(json.dumps({"op": 1, "d": self.sequence_number}))
+            await asyncio.sleep(41.25)
 
-    async def take_care_of_pinging(self, ws):
-
-        while True:
-            if self.connection != ws:
-                break
-            print(ws)
-            await asyncio.sleep(40)
-            self.connection.ping(json.dumps({"op": 1, "d": self.sequence_number}))
-
-    async def start_loop(self):
+    async def await_messages(self) -> None:
         if self.connection:
-            print(self.connection)
+            assert self.functional_interface, print("Feature not implemented")
             while msg := await self.connection.read_message():
-                msg = json.loads(msg)
-                assert msg['op'] != 9, await self.get_con_and_start_loop()
-                self.sequence_number = msg['s']
                 print(msg)
-                if msg['t'] == "VOICE_STATE_UPDATE":
-                    usr = UserObject(msg['d'])
-                    if msg['d']['channel_id'] is None:
-                        self.db_interface.user_set_online_state(usr.get_data(), False)
-                    else:
-                        db_data = [x for x in self.db_interface.fetch_all()]
-                        if int(msg['d']['user_id']) in [int(u[1]) for u in db_data]:
-                            self.db_interface.user_set_online_state(usr.get_data(), True)
-                            pass
-                        else:
-                            self.db_interface.create_user(usr.get_data())
+                msg = json.loads(msg)
+                assert msg['op'] != 9, await self.get_con()
+                self.functional_interface.interpret_data(msg)
+
+
+def interface_factory(type_of_message, db):
+    if type_of_message == "VOICE_STATE_OBSERVER":
+        return VoiceStateObserver(db)
+
+
+class VoiceStateObserver:
+    def __init__(self, db):
+        self.db = db
+
+    def interpret_data(self, msg):
+        if msg['t'] == "VOICE_STATE_UPDATE":
+            usr = UserObject(msg['d'])
+            if msg['d']['channel_id'] is None:
+                self.db.user_set_online_state(usr.get_data(), False)
+            else:
+                db_data = [x for x in self.db.fetch_all()]
+                if int(msg['d']['user_id']) in [int(u[1]) for u in db_data]:
+                    self.db.user_set_online_state(usr.get_data(), True)
+                    pass
+                else:
+                    self.db.create_user(usr.get_data(), msg['d']['guild_id'])
+
+class GuildStateObserver:
+    def __init__(self, db):
+        self.db = db
+
+    def interpret_data(self, msg):
+        if msg['t'] == "GUILD_MEMBER_UPDATE":
+            if msg['d']['user']['id'] == bot_id:
+                usr = UserObject(msg['d'])
+            if msg['d']['channel_id'] is None:
+                self.db.user_set_online_state(usr.get_data(), False)
+            else:
+                db_data = [x for x in self.db.fetch_all()]
+                if int(msg['d']['user_id']) in [int(u[1]) for u in db_data]:
+                    self.db.user_set_online_state(usr.get_data(), True)
+                    pass
+                else:
+                    self.db.create_user(usr.get_data())
