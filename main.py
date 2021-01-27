@@ -9,8 +9,6 @@ from Discord_stuff import *
 PORT = 2137
 
 
-active_connections = []
-
 def test1(con_list, data):
     print(f"data to {con_list}")
     for controller in con_list:
@@ -26,16 +24,22 @@ class HTTPController(tornado.web.RequestHandler):
         return True
 
     def get(self):
+
         active_users = self.db.fetch_active_users_from_db()
-        self.write(json.dumps({"active":active_users}))
+        self.write(json.dumps({"active": active_users}))
+
+
+
+
+
+
+
 
 
 class Controller(WebSocketHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.db = db
-        self.con_list = active_connections
-        active_connections.append(self)
         self.discord_ws = discord_ws
         self.discord_ws.connections.append(self)
         self.discord_http = discord_http
@@ -52,7 +56,7 @@ class Controller(WebSocketHandler):
         msg = json.loads(msg)
         if msg['option'] == "fetch_all":
             data = db.fetch_users_active_from_db()
-            data = json.dumps({"msg":"user_data", "id":data[0], "username":data[1]})
+            data = json.dumps({"msg": "user_data", "id":data[0], "username":data[1]})
             self.write_message(data)
         if msg['option'] == "state_of_discord":
             data = self.discord_http.get_user_data(267460142889566209)
@@ -73,6 +77,9 @@ if __name__ == "__main__":
     db = DB_handler()
     print(f"Listening localhost on {PORT}")
     discord_http = create_discord_http(db)
+
+    discord_http.update_guilds()
+
     discord_ws = create_discord_ws(function="VOICE_STATE_OBSERVER", database=db)
     asyncio.ensure_future(discord_ws.await_messages(), loop=my_loop)
 
